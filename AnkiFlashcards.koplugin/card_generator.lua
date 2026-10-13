@@ -31,6 +31,29 @@ local GEMINI_BASE_URL =
 local function call_llm(config, prompt)
     local provider = config.text_provider or "dashscope"
     local response_body = {}
+	    -- Desktop relay: quick hop over the LAN to a script on the PC.
+		-- Falls through to the direct provider call below if the relay fails.
+		if config.relay_url and config.relay_url ~= "" then
+			local rb   = {}
+			local body = json.encode({ prompt = prompt })
+			http.TIMEOUT = 10
+			local _, code = http.request {
+				url     = config.relay_url,
+				method  = "POST",
+				headers = {
+					["Content-Type"]   = "application/json",
+					["Content-Length"] = tostring(#body),
+				},
+				source = ltn12.source.string(body),
+				sink   = ltn12.sink.table(rb),
+			}
+			if tostring(code) == "200" then
+				local ok, data = pcall(json.decode, table.concat(rb))
+				if ok and type(data) == "table" and type(data.text) == "string" then
+					return data.text
+				end
+			end
+    end
 
     if provider == "gemini" then
         local api_key = config.gemini_api_key
@@ -121,26 +144,30 @@ end
 -- ── Prompt templates ──────────────────────────────────────────────────────
 
 -- Single-call prompt: returns raw JSON, no markdown fences.
--- {language} is replaced at call time with config.target_language.
-local PROMPT_TEMPLATE = [[{language} flashcard for "{phrase}" from "{title}" by "{author}".
+-- The model detects the phrase's language itself; no target language is used.
+local PROMPT_TEMPLATE = [[Flashcard for "{phrase}" from "{title}" by "{author}".
 Context (for meaning only, do NOT use its words): "...{context}..."
+
+LANGUAGE RULE: First identify the language of the highlighted phrase (use the phrase and its context). Write the definition, synonyms and example sentence in THAT SAME language. Never translate into another language.
 
 Generate a card for the highlighted phrase ONLY. Return valid JSON, no other text:
 {
   "phrase": "<highlighted text in lowercase base/infinitive form, e.g. 'cranked up' → 'crank up'; use generic pronouns; never substitute a context word>",
-  "ipa": "<IPA for European langs, pinyin for Mandarin, romaji for Japanese, or standard {language} notation>",
-  "definition": "<context-aware, simple {language} words, max 20 words>",
-  "synonyms": "<up to 3 common {language} synonyms, comma-separated>",
-  "text": "<{language} sentence, max 15 words, simple grammar; phrase is the only hard word; fresh scenario unrelated to the book; conjugate naturally; wrap with {{c1::...}} as it appears in the sentence, not the canonical form>",
-  "image_prompt": "<vivid scene from the sentence, anime-style, widescreen 16:9, no text>"
+  "language": "<the language of the phrase as one English word, e.g. French, Italian, Dutch, English>",
+  "definition": "<context-aware, simple words in the phrase's language, max 20 words>",
+  "synonyms": "<up to 3 common synonyms in the phrase's language, comma-separated>",
+  "translation": "<1-3 Dutch equivalents of the phrase, comma-separated; empty string if the phrase is itself Dutch>",
+  "text": "<sentence in the phrase's language, max 15 words, simple grammar; phrase is the only hard word; fresh scenario unrelated to the book; conjugate naturally; wrap with {{c1::...}} as it appears in the sentence, not the canonical form>"
 }]]
 
 -- Sentence-only regeneration prompt: returns text (cloze) + image_prompt.
-local TEXT_REGEN_PROMPT = [[{language} flashcard. Phrase: "{phrase}"
+local TEXT_REGEN_PROMPT = [[Flashcard. Phrase: "{phrase}"
+
+LANGUAGE RULE: Identify the language of the phrase and write the sentence in THAT SAME language. Never translate.
 
 Return valid JSON, no other text:
 {
-  "text": "<{language} sentence, max 15 words, simple grammar; phrase is the only hard word; fresh scenario; conjugate naturally; wrap with {{c1::...}} as it appears in the sentence, not the canonical form>",
+  "text": "<sentence in the phrase's language, max 15 words, simple grammar; phrase is the only hard word; fresh scenario; conjugate naturally; wrap with {{c1::...}} as it appears in the sentence, not the canonical form>",
   "image_prompt": "<vivid scene from the sentence, anime-style, widescreen 16:9, no text>"
 }]]
 
@@ -289,7 +316,16 @@ function CardGenerator.generate(config, phrase, context, title, author)
         :gsub("{phrase}",   function() return p end)
         :gsub("{context}",  function() return c end)
 
+        local socket = require("socket")
+    local t0 = socket.gettime()
     local raw_text, err = call_llm(config, prompt)
+    local secs = socket.gettime() - t0
+    local UIManager    = require("ui/uimanager")
+    local Notification = require("ui/widget/notification")
+    UIManager:show(Notification:new {
+        text    = string.format("AI call took %.1f s", secs),
+        timeout = 5,
+    })
     if not raw_text then return nil, err end
     return parse_response(raw_text)
 end
@@ -314,12 +350,12 @@ end
 
 -- Generate pronunciation only for a given phrase. Returns (string, nil) or (nil, error).
 function CardGenerator.generate_ipa(config, phrase)
-    local lang = config.target_language or "English"
-    local prompt = 'Return ONLY the pronunciation notation for the '
-                   .. lang .. ' phrase: "' .. (phrase or "")
-                   .. '"\nUse IPA for European languages, pinyin for Mandarin, '
-                   .. 'romaji for Japanese, or the standard notation for ' .. lang
-                   .. '.\nReply with just the notation, nothing else. Example: /ɪɡˈzæmpəl/'
+    local prompt = 'Return ONLY the pronunciation notation for the phrase: "'
+                   .. (phrase or "")
+                   .. '"\nFirst identify the language of the phrase, then use IPA for European '
+                   .. 'languages, pinyin for Mandarin, romaji for Japanese, or the standard '
+                   .. 'notation for that language.\n'
+                   .. 'Reply with just the notation, nothing else. Example: /ɪɡˈzæmpəl/'
 
     local raw_text, err = call_llm(config, prompt)
     if not raw_text then return nil, err end
@@ -329,12 +365,12 @@ end
 -- Quick lookup: pronunciation + short definition only (for purple highlight tap).
 -- Returns ({ipa, definition}, nil) or (nil, error_string).
 function CardGenerator.generate_quick_lookup(config, phrase)
-    local lang = config.target_language or "English"
     local p = escape_for_prompt(phrase or "")
-    local prompt = 'You are a ' .. lang .. ' dictionary. Return ONLY valid JSON for: "' .. p .. '"\n'
-                .. '{"ipa": "<pronunciation notation — IPA for European languages, '
-                .. 'pinyin for Mandarin, romaji for Japanese, or standard for ' .. lang .. '>", '
-                .. '"definition": "<simple, clear definition in everyday ' .. lang .. ', max 15 words>"}'
+    local prompt = 'You are a dictionary. First identify the language of the phrase "' .. p
+                .. '", then return ONLY valid JSON:\n'
+                .. '{"ipa": "<pronunciation in that language: IPA for European languages, '
+                .. 'pinyin for Mandarin, romaji for Japanese>", '
+                .. '"definition": "<simple, clear definition in that SAME language, max 15 words>"}'
 
     local raw_text, err = call_llm(config, prompt)
     if not raw_text then return nil, err end
