@@ -1,1 +1,6 @@
 AnkiFlashcards.koplugin/configuration.lua
+
+configuration.lua
+meta.json
+relay.log
+__pycache__/
