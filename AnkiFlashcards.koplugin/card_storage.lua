@@ -85,7 +85,11 @@ function CardStorage.save_card(card)
         ipa         = card.ipa         or "",
         definition  = card.definition  or "",
         synonyms    = card.synonyms    or "",
+	  translation = card.translation or "",
+        language    = card.language    or "",
         text        = card.text        or "",
+	   context            = card.context            or "",
+        pending_generation = card.pending_generation or false,
         source      = card.source      or "",
         book_title  = card.book_title  or "",
         book_author = card.book_author or "",
@@ -147,10 +151,13 @@ function CardStorage.update_card(original_phrase, new_card)
             e.ipa          = new_card.ipa          or ""
             e.definition   = new_card.definition   or ""
             e.synonyms     = new_card.synonyms     or ""
+            e.translation  = new_card.translation or e.translation or ""
+            e.language     = new_card.language    or e.language    or ""
             e.text         = new_card.text         or ""
             e.source       = new_card.source       or ""
             e.image_prompt = new_card.image_prompt or e.image_prompt or ""
             e.updated_at   = os.time()
+		 e.pending_generation = false	
             save_raw(entries)
             return true
         end
