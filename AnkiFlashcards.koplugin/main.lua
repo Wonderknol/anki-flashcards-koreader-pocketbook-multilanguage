@@ -24,6 +24,11 @@ local ImageGenerator   = require("image_generator")
 local AudioGenerator   = require("audio_generator")
 
 local MAX_HL    = 2000
+-- Set to true to generate illustrations again.
+local IMAGES_ENABLED = false
+-- true = save the card silently and show only a short definition popup
+local QUICK_SAVE = true
+local OFFLINE_SAVE = true
 local MAX_TITLE = 100
 
 -- Load configuration from configuration.lua; saved anki settings (from the
@@ -169,6 +174,7 @@ end
 -- For ankivocab, only trigger if the card was actually created via AnkiVocab
 -- (_ankivocab_word is set), not just because the current provider is ankivocab.
 local function can_generate_image(card, img_cfg)
+    if not IMAGES_ENABLED then return false end
     local has_prompt = card.image_prompt and card.image_prompt ~= ""
     local is_ankivocab_card = img_cfg.image_provider == "ankivocab"
                           and card._ankivocab_word and card._ankivocab_word ~= ""
@@ -351,6 +357,24 @@ function AnkiFlashcards:init()
                 end
 
                 ui.highlight:onClose()
+				if OFFLINE_SAVE and not NetworkMgr:isOnline() then
+					local ok_s, save_err = CardStorage.save_card({
+						phrase             = phrase,
+						context            = context,
+						book_title         = title,
+						book_author        = author,
+						highlight_pos0     = highlight_pos0,
+						highlight_pos1     = highlight_pos1,
+						pending_generation = true,
+					})
+					UIManager:show(Notification:new {
+						text = (ok_s or save_err == "already_saved")
+							   and (_("Saved for later: ") .. phrase)
+							   or _("Could not save card"),
+						timeout = 3,
+					})
+					return
+				end
 
                 -- Show a loading notification while the AI call runs.
                 local loading = Notification:new {
@@ -394,6 +418,21 @@ function AnkiFlashcards:init()
                     card.book_author    = author
                     card.highlight_pos0 = highlight_pos0
                     card.highlight_pos1 = highlight_pos1
+				if QUICK_SAVE then
+                        local ok_s, save_err = CardStorage.save_card(card)
+                        local msg = capitalize_first(card.phrase or phrase)
+                        if card.definition and card.definition ~= "" then
+                            msg = msg .. ": " .. card.definition
+                        end
+                        if card.translation and card.translation ~= "" then
+                            msg = msg .. "\n→ " .. card.translation
+                        end
+                        if not ok_s and save_err ~= "already_saved" then
+                            msg = msg .. "\n(" .. _("could not save card") .. ")"
+                        end
+                        UIManager:show(InfoMessage:new { text = msg, timeout = 6 })
+                        return
+				end
 
                     -- Keep _audio_url so AnkiConnect can download and attach
                     -- the server-generated audio when sending to Anki.
@@ -466,7 +505,7 @@ function AnkiFlashcards:init()
                                     local nv = make_viewer(new_card, false)
                                     viewer_ref[1] = nv
                                     -- Kick off new image generation.
-                                    if new_card.image_prompt then
+                                      if IMAGES_ENABLED and new_card.image_prompt then
                                         ImageGenerator.generate_async(
                                             CONFIGURATION,
                                             new_card.image_prompt,
@@ -508,7 +547,7 @@ function AnkiFlashcards:init()
                                         c.image_prompt = new_prompt
                                         viewer_ref[1] = make_viewer(c, true)
                                         -- Kick off image generation with new prompt.
-                                        if new_prompt then
+                                        if IMAGES_ENABLED and new_prompt then
                                             ImageGenerator.generate_async(
                                                 CONFIGURATION,
                                                 new_prompt,
