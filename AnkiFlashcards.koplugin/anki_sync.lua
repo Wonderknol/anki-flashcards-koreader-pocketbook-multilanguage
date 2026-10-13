@@ -32,16 +32,8 @@ local AnkiSync = {}
 -- top-level deck configured by the user (e.g. "English" from "English::Koreader").
 -- Falls back to config.deck or "English::Koreader" when no title is available.
 local function build_deck_name(config, card)
-    local base = (config and config.deck and config.deck ~= "")
-                 and config.deck or "English::Koreader"
-    local title = card and card.book_title and card.book_title ~= "" and card.book_title
-    if not title then return base end
-    -- Replace colons (Anki hierarchy separator) and trim.
-    local safe = title:gsub(":", " -"):match("^%s*(.-)%s*$")
-    if safe == "" then return base end
-    -- Derive the top-level deck (everything before the first "::").
-    local parent = base:match("^([^:]+)") or base
-    return parent .. "::" .. safe
+    return (config and config.deck and config.deck ~= "")
+           and config.deck or "English::Koreader"
 end
 
 local function post(url, action, params)
@@ -97,6 +89,27 @@ function AnkiSync.send_card(config, card, tts_config)
     if not config or not config.url or config.url == "" then
         return nil, "Anki URL not configured"
     end
+	-- Offline stub: generate the card text now that we are sending.
+    if card.pending_generation then
+        if not tts_config then
+            return nil, "Cannot generate offline card here"
+        end
+        local CardGenerator = require("card_generator")
+        local CardStorage   = require("card_storage")
+        local gen, gen_err = CardGenerator.generate(
+            tts_config, card.phrase, card.context or "",
+            card.book_title or "", card.book_author or "")
+        if not gen then
+            return nil, "Generation failed: " .. tostring(gen_err)
+        end
+        local original_phrase = card.phrase
+        for _, k in ipairs({ "phrase", "language", "definition", "synonyms",
+                             "translation", "text" }) do
+            card[k] = gen[k] or card[k] or ""
+        end
+        card.pending_generation = false
+        CardStorage.update_card(original_phrase, card)
+    end
 
     local model = config.anki_model or config.model or "Vocabulary"
 
@@ -105,6 +118,7 @@ function AnkiSync.send_card(config, card, tts_config)
         ["IPA"]        = card.ipa        or "",
         ["Definition"] = card.definition or "",
         ["Synonyms"]   = card.synonyms   or "",
+	  ["Translation"] = card.translation or "",
         ["Text"]       = card.text       or "",
         ["Source"]     = card.source     or "",
     }
@@ -117,7 +131,23 @@ function AnkiSync.send_card(config, card, tts_config)
             allowDuplicate = false,
             duplicateScope = "deck",
         },
-        tags = config.tags or { "KOReader" },
+        tags = (function()
+		local t = {}
+		for _, v in ipairs(config.tags or { "KOReader" }) do t[#t+1] = v end
+
+    -- Book title as a tag (tags can't contain spaces)
+		local title = card.book_title
+		if title and title ~= "" then
+			t[#t+1] = (title:gsub("[%s:]+", "_"))
+		end
+
+    -- Language tag, e.g. lang::french
+		local lang = type(card.language) == "string"
+					and (card.language:lower():gsub("[^%a]", "")) or ""
+		if lang ~= "" then t[#t+1] = "lang::" .. lang end
+
+		return t
+	end)(),
     }
 
     -- Store image via storeMediaFile and reference it in ImageFront/ImageBack fields.
