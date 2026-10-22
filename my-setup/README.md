@@ -4,7 +4,7 @@ Last updated: 12 October 2026
 
 This document explains how my ereader-to-Anki flashcard setup works, which files I
 changed, and how to put everything back after a plugin update.
-It contains no API keys. Never paste keys into notes like this.
+It contains no API keys.
 
 ---
 
